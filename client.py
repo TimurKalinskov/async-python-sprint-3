@@ -1,10 +1,12 @@
 import asyncio
 # import aiohttp
 from asyncio.streams import StreamReader, StreamWriter
-from threading import Thread
 
 
 class Client:
+    allow_commands = [
+        'send', 'send-to', 'delay-send', 'delay-send-to', 'exit', 'quit'
+    ]
     def __init__(self, nick: str, server_host='127.0.0.1', server_port=8000):
         self.nick = nick
         self.server_host = server_host
@@ -14,12 +16,28 @@ class Client:
         self.event_loop = asyncio.new_event_loop()
 
     def connect(self):
-        Thread(
-            target=self._loop_in_thread, args=(self.event_loop,), daemon=True
-        ).start()
+        task1 = self.event_loop.create_task(self.main())
+        task2 = self.event_loop.create_task(self.send_command())
+        self.event_loop.run_until_complete(asyncio.wait([task1, task2]))
 
-    def send_message(self, message: str = ''):
-        asyncio.run_coroutine_threadsafe(self.send(message), self.event_loop)
+    async def send_command(self):
+        while True:
+            command = await self.event_loop.run_in_executor(
+                None, lambda: input('Enter command: ')
+            )
+            if not command:
+                continue
+            command = command.split()
+            if not command[0] in self.allow_commands:
+                print(f'Command "{command[0]}" is not allowed')
+                continue
+            if command[0] == 'send':
+                await self.send_all(''.join(command[1:]))
+            elif command[0] == 'send-to':
+                await self.send_all(''.join(command[1:]))
+            elif command[0] in ['exit', 'quit']:
+                self.writer.close()
+                break
 
     def _loop_in_thread(self, loop):
         asyncio.set_event_loop(loop)
@@ -38,15 +56,11 @@ class Client:
         print('Close the connection')
         self.writer.close()
 
-    async def send(self, message: str = ''):
-        self.writer.write(f'{self.nick} * {message}'.encode())
+    async def send_all(self, message: str = ''):
+        self.writer.write(f'{self.nick}_*_{message}'.encode())
         await self.writer.drain()
 
 
 if __name__ == '__main__':
     client = Client('test')
     client.connect()
-    # client.send_message('Hello')
-
-
-

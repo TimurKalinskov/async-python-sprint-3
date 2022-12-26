@@ -39,6 +39,10 @@ class Server:
             await self.send_message(writer, address, data)
 
         logger.info('Stop serving %s', address)
+        try:
+            self.writers.remove(writer)
+        except ValueError:
+            pass
         writer.close()
 
     async def send_message(self, self_writer, addr, message):
