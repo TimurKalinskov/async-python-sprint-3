@@ -24,7 +24,7 @@ try:
     sqlite_create_table_query = '''
         CREATE TABLE IF NOT EXISTS registrations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nick_name TEXT NOT NULL,
+            username TEXT NOT NULL,
             reg_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
     '''
@@ -33,7 +33,7 @@ try:
     print('База данных подключена к SQLite')
     cursor.execute(sqlite_create_table_query)
     sqlite_connection.commit()
-    print('Таблица "messages" создана')
+    print('Таблица "registrations" создана')
 
     cursor.close()
 

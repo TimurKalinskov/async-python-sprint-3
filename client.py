@@ -11,8 +11,8 @@ class Client:
         'send', 'send-to', 'delay-send', 'delay-send-to', 'exit', 'quit'
     ]
 
-    def __init__(self, nick: str, server_host=HOST[0], server_port=HOST[1]):
-        self.nick_name = nick
+    def __init__(self, username: str, server_host=HOST[0], server_port=HOST[1]):
+        self.username = username
         self.server_host = server_host
         self.server_port = server_port
         self.writer = None
@@ -58,20 +58,20 @@ class Client:
 
     async def send_all(self, message: str = ''):
         request_data = RequestData(
-            nick_name=self.nick_name,
+            username=self.username,
             message=message,
         )
         self.writer.write(request_data.to_string_json().encode())
         await self.writer.drain()
 
     async def send_hello_message(self):
-        request_data = RequestData(self.nick_name, target='hello')
+        request_data = RequestData(self.username, target='hello')
         self.writer.write(request_data.to_string_json().encode())
         await self.writer.drain()
 
     async def send_to(self, receiver: str, message: str = ''):
         request_data = RequestData(
-            nick_name=self.nick_name,
+            username=self.username,
             target='one_to_one',
             message=message,
             receiver=receiver,

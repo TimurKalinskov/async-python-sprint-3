@@ -6,7 +6,7 @@ from typing import Literal
 
 @dataclass
 class RequestData:
-    nick_name: str
+    username: str
     target: Literal['all', 'one_to_one', 'hello'] = 'all'
     receiver: str = ''
     message: str = ''
