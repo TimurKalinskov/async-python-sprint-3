@@ -4,13 +4,13 @@ import asyncio
 import json
 import functools
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pytz import timezone
 from sqlite3 import connect, PARSE_DECLTYPES, PARSE_COLNAMES
 from asyncio.streams import StreamReader, StreamWriter
 from concurrent.futures import ThreadPoolExecutor
 
-from config import DB_NAME, TZ, HOST, LIMIT_MESSAGES
+from config import DB_NAME, TZ, HOST, LIMIT_MESSAGES, LIFETIME_MESSAGES
 
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,11 @@ class Server:
 
     def listen(self):
         loop = asyncio.get_event_loop()
-        loop.run_until_complete(self.main())
+        main_task = loop.create_task(self.main())
+        delete_messages_task = loop.create_task(self.delete_old_messages())
+        loop.run_until_complete(asyncio.wait([
+            main_task, delete_messages_task
+        ]))
 
     async def main(self):
         srv = await asyncio.start_server(
@@ -148,6 +152,15 @@ class Server:
             )
         )
         return user
+
+    async def delete_old_messages(self):
+        loop = asyncio.get_event_loop()
+        while True:
+            await loop.run_in_executor(
+                self.db_executor,
+                self.__delete_old_messages
+            )
+            await asyncio.sleep(60)
 
     @staticmethod
     def __create_record_in_db(message, sender, receiver):
@@ -276,3 +289,24 @@ class Server:
             if connection:
                 connection.close()
         return user
+
+    @staticmethod
+    def __delete_old_messages():
+        connection = None
+        deadline_date = datetime.now(timezone(TZ)) - timedelta(
+            hours=LIFETIME_MESSAGES)
+        try:
+            connection = connect(
+                DB_NAME, detect_types=PARSE_DECLTYPES | PARSE_COLNAMES
+            )
+            cursor = connection.cursor()
+            delete_message_query = f'''
+                DELETE FROM main.messages WHERE send_date < '{deadline_date}';
+            '''
+            cursor.execute(delete_message_query)
+            connection.commit()
+        except Exception as er:
+            logger.error(f'DB error - deleting messages: {er}')
+        finally:
+            if connection:
+                connection.close()
