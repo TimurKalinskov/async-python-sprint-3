@@ -25,7 +25,8 @@ try:
         CREATE TABLE IF NOT EXISTS registrations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL,
-            reg_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            reg_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            count_messages INTEGER DEFAULT 0 NOT NULL
         );
     '''
 

@@ -10,7 +10,10 @@ from sqlite3 import connect, PARSE_DECLTYPES, PARSE_COLNAMES
 from asyncio.streams import StreamReader, StreamWriter
 from concurrent.futures import ThreadPoolExecutor
 
-from config import DB_NAME, TZ, HOST, LIMIT_MESSAGES, LIFETIME_MESSAGES
+from config import (
+    DB_NAME, TZ, HOST, LIMIT_SHOW_MESSAGES, LIFETIME_MESSAGES,
+    UPDATE_PERIOD, LIMIT_MESSAGES
+)
 
 
 logger = logging.getLogger(__name__)
@@ -29,8 +32,9 @@ class Server:
         loop = asyncio.get_event_loop()
         main_task = loop.create_task(self.main())
         delete_messages_task = loop.create_task(self.delete_old_messages())
+        reset_limit_task = loop.create_task(self.reset_limit_messages())
         loop.run_until_complete(asyncio.wait([
-            main_task, delete_messages_task
+            main_task, delete_messages_task, reset_limit_task
         ]))
 
     async def main(self):
@@ -83,29 +87,36 @@ class Server:
         data: dict = json.loads(data.decode())
         target = data['target']
         user = data['username']
+        count_messages = 0
 
         if not target == 'hello':
             await self.store_message(data)
 
+        exist_user = await self.get_user(user)
+        if not exist_user:
+            await self.reg_user(user)
+            reg_date = datetime.now(timezone(TZ))
+        else:
+            reg_date = exist_user[1]
+            count_messages = exist_user[2]
+
         if target == 'hello':
-            exist_user = await self.get_user(user)
-            if exist_user:
-                await self.send_available_messages(user, writer, exist_user[1])
-            else:
-                await self.reg_user(user)
-                await self.send_available_messages(user, writer)
+            await self.send_available_messages(user, writer, reg_date)
             self.users[user] = writer
-            await self.send_hello(writer, data['username'])
+            await self.send_hello(writer, user)
         elif target == 'all':
-            await self.send_to_all(writer, user, data['message'])
+            if count_messages >= LIMIT_MESSAGES:
+                await self.send_limit_warning(writer)
+            else:
+                await self.send_to_all(writer, user, data['message'])
+                await self.append_count_message(user, count_messages)
         elif target == 'one_to_one':
             await self.send_to_one(
                 user, data['message'], data['receiver']
             )
 
     async def send_available_messages(
-            self, user: str, writer: StreamWriter,
-            reg_date: datetime = datetime.now(timezone(TZ))):
+            self, user: str, writer: StreamWriter, reg_date: datetime):
         loop = asyncio.get_event_loop()
         messages = await loop.run_in_executor(
             self.db_executor,
@@ -161,6 +172,33 @@ class Server:
                 self.__delete_old_messages
             )
             await asyncio.sleep(60)
+
+    async def append_count_message(self, username: str, count_messages: int):
+        count_messages += 1
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            self.db_executor,
+            functools.partial(
+                self.__append_count_message,
+                username=username,
+                count_messages=count_messages
+            )
+        )
+
+    async def reset_limit_messages(self):
+        loop = asyncio.get_event_loop()
+        while True:
+            await loop.run_in_executor(
+                self.db_executor,
+                self.__reset_limits
+            )
+            await asyncio.sleep(60 * UPDATE_PERIOD)
+
+    @staticmethod
+    async def send_limit_warning(writer: StreamWriter):
+        writer.write('You have reached the limit for sending messages '
+                     'to the general chat\n'.encode())
+        await writer.drain()
 
     @staticmethod
     def __create_record_in_db(message, sender, receiver):
@@ -226,7 +264,7 @@ class Server:
                     LIMIT {0}
                 )
                 ORDER BY send_date;
-            '''.format(LIMIT_MESSAGES)
+            '''.format(LIMIT_SHOW_MESSAGES)
             messages = cursor.execute(
                 get_message_query, (receiver, reg_date, receiver, reg_date)
             ).fetchall()
@@ -276,7 +314,8 @@ class Server:
             get_user_query = '''
                 SELECT 
                     r.username,
-                    r.reg_date
+                    r.reg_date,
+                    r.count_messages
                 FROM main.registrations r
                 WHERE r.username = ?;
             '''
@@ -294,7 +333,7 @@ class Server:
     def __delete_old_messages():
         connection = None
         deadline_date = datetime.now(timezone(TZ)) - timedelta(
-            hours=LIFETIME_MESSAGES)
+            minutes=LIFETIME_MESSAGES)
         try:
             connection = connect(
                 DB_NAME, detect_types=PARSE_DECLTYPES | PARSE_COLNAMES
@@ -307,6 +346,56 @@ class Server:
             connection.commit()
         except Exception as er:
             logger.error(f'DB error - deleting messages: {er}')
+        finally:
+            if connection:
+                connection.close()
+
+    @staticmethod
+    def __append_count_message(username, count_messages):
+        connection = None
+        try:
+            connection = connect(
+                DB_NAME, detect_types=PARSE_DECLTYPES | PARSE_COLNAMES
+            )
+            cursor = connection.cursor()
+
+            append_count_query = ''' 
+                UPDATE main.registrations
+                SET count_messages = ?
+                WHERE username = ?
+            '''
+            cursor.execute(
+                append_count_query,
+                (
+                    count_messages, username
+                )
+            )
+            connection.commit()
+        except Exception as er:
+            logger.error(f'DB error - updating count messages: {er}')
+        finally:
+            if connection:
+                connection.close()
+
+    @staticmethod
+    def __reset_limits():
+        connection = None
+        try:
+            connection = connect(
+                DB_NAME, detect_types=PARSE_DECLTYPES | PARSE_COLNAMES
+            )
+            cursor = connection.cursor()
+
+            reset_limit_query = ''' 
+                UPDATE main.registrations
+                SET count_messages = 0
+            '''
+            cursor.execute(
+                reset_limit_query
+            )
+            connection.commit()
+        except Exception as er:
+            logger.error(f'DB error - reset limits: {er}')
         finally:
             if connection:
                 connection.close()
