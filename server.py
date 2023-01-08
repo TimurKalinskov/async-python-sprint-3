@@ -15,7 +15,6 @@ from config import (
     UPDATE_PERIOD, LIMIT_MESSAGES
 )
 
-
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler(stream=sys.stdout))
@@ -53,7 +52,7 @@ class Server:
             data = await reader.read(1024)
             if not data:
                 break
-            await self.process_data(data, writer)
+            await self.process_data(data, writer, address)
 
         logger.info('Stop serving %s', address)
         await self.disconnect_user(writer)
@@ -79,7 +78,7 @@ class Server:
             for w_list in self.users.values():
                 for w in w_list:
                     w.write(
-                        f'{username} has left the chat\n'.encode()
+                        f'{username} has left the chat'.encode()
                     )
                     await w.drain()
 
@@ -91,7 +90,7 @@ class Server:
                 if w != self_writer:
                     w.write(
                         f'{datetime.now(timezone(TZ))} {sender} to all: '
-                        f'{message}\n'.encode()
+                        f'{message}'.encode()
                     )
                     await w.drain()
 
@@ -103,7 +102,7 @@ class Server:
                         w.write(
                             f'{datetime.now(timezone(TZ))} '
                             f'{sender} to {receiver}: '
-                            f'{message}\n'.encode()
+                            f'{message}'.encode()
                         )
                         await w.drain()
 
@@ -114,10 +113,10 @@ class Server:
         for user, w_list in self.users.items():
             if user != sender:
                 for w in w_list:
-                    w.write(f'New guest in the chat! - {sender}\n'.encode())
+                    w.write(f'New guest in the chat! - {sender}'.encode())
                     await w.drain()
 
-    async def process_data(self, data: bytes, writer: StreamWriter):
+    async def process_data(self, data: bytes, writer: StreamWriter, address):
         data: dict = json.loads(data.decode())
         target = data['target']
         user = data['username']
@@ -151,6 +150,8 @@ class Server:
             await self.send_to_one(
                 writer, user, data['message'], data['receiver']
             )
+        elif target == 'status':
+            await self.send_status(writer, user, address)
 
     async def send_available_messages(
             self, user: str, writer: StreamWriter, reg_date: datetime):
@@ -231,10 +232,19 @@ class Server:
             )
             await asyncio.sleep(60 * UPDATE_PERIOD)
 
+    async def send_status(self, writer: StreamWriter, username: str,
+                          address: tuple[str, int]) -> None:
+        message = 'Your username - "{}"\nYour address - {}\nYour port - {}\n' \
+                  'Users online - {}:\n{}'\
+            .format(username, address[0], address[1], len(self.online_users),
+                    ', '.join(self.online_users))
+        writer.write(message.encode())
+        await writer.drain()
+
     @staticmethod
     async def send_limit_warning(writer: StreamWriter):
         writer.write('You have reached the limit for sending messages '
-                     'to the general chat\n'.encode())
+                     'to the general chat'.encode())
         await writer.drain()
 
     @staticmethod

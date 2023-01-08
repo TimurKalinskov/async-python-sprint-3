@@ -30,8 +30,6 @@ try:
         );
     '''
 
-    cursor = sqlite_connection.cursor()
-    print('База данных подключена к SQLite')
     cursor.execute(sqlite_create_table_query)
     sqlite_connection.commit()
     print('Таблица "registrations" создана')

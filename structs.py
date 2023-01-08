@@ -7,10 +7,9 @@ from typing import Literal
 @dataclass
 class RequestData:
     username: str
-    target: Literal['all', 'one_to_one', 'hello'] = 'all'
+    target: Literal['all', 'one_to_one', 'hello', 'status'] = 'all'
     receiver: str = ''
     message: str = ''
-    delay: int | None = None
 
     def to_json(self):
         return asdict(self)
