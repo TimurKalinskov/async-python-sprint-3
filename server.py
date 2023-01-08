@@ -21,9 +21,10 @@ logger.addHandler(logging.StreamHandler(stream=sys.stdout))
 
 
 class Server:
-    def __init__(self, host=HOST[0], port=HOST[1]):
+    def __init__(self, host=HOST[0], port=HOST[1], db_name=DB_NAME):
         self.host: str = host
         self.port: int = port
+        self.db_name = db_name
         self.users: dict[str, list[StreamWriter]] = dict()
         self.db_executor = ThreadPoolExecutor(1)
         self.online_users: list = list()
@@ -247,13 +248,12 @@ class Server:
                      'to the general chat'.encode())
         await writer.drain()
 
-    @staticmethod
-    def __create_record_in_db(message, sender, receiver):
+    def __create_record_in_db(self, message, sender, receiver):
         connection = None
         receiver = receiver or 'all'
         try:
             connection = connect(
-                DB_NAME, detect_types=PARSE_DECLTYPES | PARSE_COLNAMES
+                self.db_name, detect_types=PARSE_DECLTYPES | PARSE_COLNAMES
             )
             cursor = connection.cursor()
 
@@ -276,13 +276,12 @@ class Server:
             if connection:
                 connection.close()
 
-    @staticmethod
-    def __get_available_messages(receiver, reg_date):
+    def __get_available_messages(self, receiver, reg_date):
         messages = []
         connection = None
         try:
             connection = connect(
-                DB_NAME, detect_types=PARSE_DECLTYPES | PARSE_COLNAMES
+                self.db_name, detect_types=PARSE_DECLTYPES | PARSE_COLNAMES
             )
             cursor = connection.cursor()
             get_message_query = '''
@@ -326,12 +325,11 @@ class Server:
                 connection.close()
         return messages
 
-    @staticmethod
-    def __create_user_db_record(user):
+    def __create_user_db_record(self, user):
         connection = None
         try:
             connection = connect(
-                DB_NAME, detect_types=PARSE_DECLTYPES | PARSE_COLNAMES
+                self.db_name, detect_types=PARSE_DECLTYPES | PARSE_COLNAMES
             )
             cursor = connection.cursor()
 
@@ -353,13 +351,12 @@ class Server:
             if connection:
                 connection.close()
 
-    @staticmethod
-    def __get_user(username):
+    def __get_user(self, username):
         connection = None
         user = None
         try:
             connection = connect(
-                DB_NAME, detect_types=PARSE_DECLTYPES | PARSE_COLNAMES
+                self.db_name, detect_types=PARSE_DECLTYPES | PARSE_COLNAMES
             )
             cursor = connection.cursor()
             get_user_query = '''
@@ -380,14 +377,13 @@ class Server:
                 connection.close()
         return user
 
-    @staticmethod
-    def __delete_old_messages():
+    def __delete_old_messages(self):
         connection = None
         deadline_date = datetime.now(timezone(TZ)) - timedelta(
             minutes=LIFETIME_MESSAGES)
         try:
             connection = connect(
-                DB_NAME, detect_types=PARSE_DECLTYPES | PARSE_COLNAMES
+                self.db_name, detect_types=PARSE_DECLTYPES | PARSE_COLNAMES
             )
             cursor = connection.cursor()
             delete_message_query = f'''
@@ -401,12 +397,11 @@ class Server:
             if connection:
                 connection.close()
 
-    @staticmethod
-    def __append_count_message(username, count_messages):
+    def __append_count_message(self, username, count_messages):
         connection = None
         try:
             connection = connect(
-                DB_NAME, detect_types=PARSE_DECLTYPES | PARSE_COLNAMES
+                self.db_name, detect_types=PARSE_DECLTYPES | PARSE_COLNAMES
             )
             cursor = connection.cursor()
 
@@ -428,12 +423,11 @@ class Server:
             if connection:
                 connection.close()
 
-    @staticmethod
-    def __reset_limits():
+    def __reset_limits(self):
         connection = None
         try:
             connection = connect(
-                DB_NAME, detect_types=PARSE_DECLTYPES | PARSE_COLNAMES
+                self.db_name, detect_types=PARSE_DECLTYPES | PARSE_COLNAMES
             )
             cursor = connection.cursor()
 
