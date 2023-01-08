@@ -25,8 +25,9 @@ class Server:
     def __init__(self, host=HOST[0], port=HOST[1]):
         self.host: str = host
         self.port: int = port
-        self.users: dict[str, StreamWriter] = dict()
+        self.users: dict[str, list[StreamWriter]] = dict()
         self.db_executor = ThreadPoolExecutor(1)
+        self.online_users: list = list()
 
     def listen(self):
         loop = asyncio.get_event_loop()
@@ -50,38 +51,71 @@ class Server:
 
         while True:
             data = await reader.read(1024)
-            await self.process_data(data, writer)
             if not data:
                 break
+            await self.process_data(data, writer)
 
         logger.info('Stop serving %s', address)
+        await self.disconnect_user(writer)
+
+    async def disconnect_user(self, writer: StreamWriter):
+        offline_flag = False
+        username = None
+        for user, w_list in self.users.items():
+            if writer in w_list:
+                w_list.remove(writer)
+                if not w_list:
+                    offline_flag = True
+                    username = user
+                    try:
+                        self.online_users.remove(user)
+                    except ValueError as er:
+                        logger.error(
+                            f'Unable to remove user {user} from the list: {er}'
+                        )
+                    break
         writer.close()
+        if offline_flag:
+            for w_list in self.users.values():
+                for w in w_list:
+                    w.write(
+                        f'{username} has left the chat\n'.encode()
+                    )
+                    await w.drain()
 
     async def send_to_all(self, self_writer, sender, message):
         if isinstance(message, bytes):
             message = message.decode()
-        for w in self.users.values():
-            if w != self_writer:
-                w.write(
-                    f'{datetime.now(timezone(TZ))} {sender}: '
-                    f'{message}\n'.encode()
-                )
-                await w.drain()
+        for w_list in self.users.values():
+            for w in w_list:
+                if w != self_writer:
+                    w.write(
+                        f'{datetime.now(timezone(TZ))} {sender} to all: '
+                        f'{message}\n'.encode()
+                    )
+                    await w.drain()
 
-    async def send_to_one(self, sender, message, receiver):
-        for username, w in self.users.items():
-            if username == receiver:
-                w.write(
-                    f'{datetime.now(timezone(TZ))} {sender}: '
-                    f'{message}\n'.encode()
-                )
-                await w.drain()
+    async def send_to_one(self, self_writer, sender, message, receiver):
+        for username, w_list in self.users.items():
+            if username in (receiver, sender):
+                for w in w_list:
+                    if w != self_writer:
+                        w.write(
+                            f'{datetime.now(timezone(TZ))} '
+                            f'{sender} to {receiver}: '
+                            f'{message}\n'.encode()
+                        )
+                        await w.drain()
 
-    async def send_hello(self, self_writer, sender):
-        for w in self.users.values():
-            if w != self_writer:
-                w.write(f'New guest in the chat! - {sender}\n'.encode())
-                await w.drain()
+    async def send_hello(self, sender):
+        if sender in self.online_users:
+            return
+        self.online_users.append(sender)
+        for user, w_list in self.users.items():
+            if user != sender:
+                for w in w_list:
+                    w.write(f'New guest in the chat! - {sender}\n'.encode())
+                    await w.drain()
 
     async def process_data(self, data: bytes, writer: StreamWriter):
         data: dict = json.loads(data.decode())
@@ -101,9 +135,12 @@ class Server:
             count_messages = exist_user[2]
 
         if target == 'hello':
+            if user not in self.users:
+                self.users[user] = [writer]
+            else:
+                self.users[user].append(writer)
             await self.send_available_messages(user, writer, reg_date)
-            self.users[user] = writer
-            await self.send_hello(writer, user)
+            await self.send_hello(user)
         elif target == 'all':
             if count_messages >= LIMIT_MESSAGES:
                 await self.send_limit_warning(writer)
@@ -112,7 +149,7 @@ class Server:
                 await self.append_count_message(user, count_messages)
         elif target == 'one_to_one':
             await self.send_to_one(
-                user, data['message'], data['receiver']
+                writer, user, data['message'], data['receiver']
             )
 
     async def send_available_messages(
@@ -127,7 +164,7 @@ class Server:
             )
         )
         for m in messages:
-            message = f'{m[2]} {m[1]}: {m[0]}\n'.encode()
+            message = f'{m[0]} {m[1]} to {m[2]}: {m[3]}\n'.encode()
             writer.write(message)
             await writer.drain()
 
@@ -241,22 +278,25 @@ class Server:
             get_message_query = '''
                 SELECT *
                 FROM (
-                    SELECT 
-                        message,
+                    SELECT
+                        send_date,
                         sender,
-                        send_date
+                        receiver, 
+                        message
                     FROM main.messages
                     WHERE receiver in ('all', ?)
                         AND send_date >= ?
+                        OR sender = ?
                     ORDER BY send_date
                 )
                 UNION
                 SELECT *
                 FROM (
                     SELECT 
-                        message,
+                        send_date,
                         sender,
-                        send_date
+                        receiver, 
+                        message
                     FROM main.messages
                     WHERE receiver in ('all', ?)
                         AND send_date <= ?
@@ -266,7 +306,8 @@ class Server:
                 ORDER BY send_date;
             '''.format(LIMIT_SHOW_MESSAGES)
             messages = cursor.execute(
-                get_message_query, (receiver, reg_date, receiver, reg_date)
+                get_message_query,
+                (receiver, reg_date, receiver, receiver, reg_date)
             ).fetchall()
         except Exception as er:
             logger.error(f'DB error - get messages: {er}')

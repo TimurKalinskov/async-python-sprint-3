@@ -11,7 +11,6 @@ class RequestData:
     receiver: str = ''
     message: str = ''
     delay: int | None = None
-    message_life: int = 3600
 
     def to_json(self):
         return asdict(self)
