@@ -32,6 +32,7 @@ class Client:
         self.reader, self.writer = await asyncio.open_connection(
             self.server_host, self.server_port
         )
+        return self.reader, self.writer
 
     async def send_command(self):
         print(

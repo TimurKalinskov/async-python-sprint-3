@@ -30,7 +30,8 @@ class Server:
         self.online_users: list = list()
 
     def listen(self):
-        loop = asyncio.get_event_loop()
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         main_task = loop.create_task(self.main())
         delete_messages_task = loop.create_task(self.delete_old_messages())
         reset_limit_task = loop.create_task(self.reset_limit_messages())
