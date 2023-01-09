@@ -124,9 +124,6 @@ class Server:
         user = data['username']
         count_messages = 0
 
-        if not target == 'hello':
-            await self.store_message(data)
-
         exist_user = await self.get_user(user)
         if not exist_user:
             await self.reg_user(user)
@@ -146,9 +143,11 @@ class Server:
             if count_messages >= LIMIT_MESSAGES:
                 await self.send_limit_warning(writer)
             else:
+                await self.store_message(data)
                 await self.send_to_all(writer, user, data['message'])
                 await self.append_count_message(user, count_messages)
         elif target == 'one_to_one':
+            await self.store_message(data)
             await self.send_to_one(
                 writer, user, data['message'], data['receiver']
             )

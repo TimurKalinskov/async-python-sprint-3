@@ -32,6 +32,7 @@ class Client:
         self.reader, self.writer = await asyncio.open_connection(
             self.server_host, self.server_port
         )
+        await self.send_hello_message()
         return self.reader, self.writer
 
     async def send_command(self):
@@ -42,7 +43,7 @@ class Client:
         while True:
             await asyncio.sleep(0.3)
             command = await self.event_loop.run_in_executor(
-                None, lambda: input('Enter command: ')
+                None, lambda: input(f'{self.username}: ')
             )
             if not command:
                 continue
@@ -63,7 +64,6 @@ class Client:
                 self.get_help()
 
     async def read_data(self):
-        await self.send_hello_message()
         while True:
             data = await self.reader.read(1024)
             print(f'\n{data.decode()}')
