@@ -5,37 +5,23 @@ import os
 import nest_asyncio
 import _thread
 
-from contextlib import contextmanager
-from sqlite3 import connect, PARSE_DECLTYPES, PARSE_COLNAMES
 from asyncio.streams import StreamReader, StreamWriter
 
-from test_db import create_test_db
+from migration import create_db
 from client import Client
 from server import Server
 from config import LIMIT_MESSAGES
+from utils import get_cursor
 
 
 nest_asyncio.apply()
 test_db_name = 'test_db.db'
 
 
-@contextmanager
-def get_cursor():
-    """Create cursor for connection to SQLite db"""
-    connection = connect(
-        test_db_name, detect_types=PARSE_DECLTYPES | PARSE_COLNAMES
-    )
-    cursor = connection.cursor()
-    yield cursor
-
-    if connection:
-        connection.close()
-
-
 class ChatTest(aiounittest.AsyncTestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        create_test_db(test_db_name)
+        create_db(test_db_name)
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -54,7 +40,7 @@ class ChatTest(aiounittest.AsyncTestCase):
         get_messages_query = 'SELECT * FROM main.messages'
 
         # make sure the database is empty
-        with get_cursor() as cursor:
+        with get_cursor(db_name=test_db_name) as cursor:
             users = cursor.execute(get_users_query).fetchall()
             self.assertEqual(len(users), 0)
             messages = cursor.execute(get_messages_query).fetchall()
@@ -74,7 +60,7 @@ class ChatTest(aiounittest.AsyncTestCase):
 
         # little time to save the data to the database
         time.sleep(0.1)
-        with get_cursor() as cursor:
+        with get_cursor(db_name=test_db_name) as cursor:
             users = cursor.execute(get_users_query).fetchall()
             # testing storing new users
             self.assertEqual(len(users), 2)
@@ -85,7 +71,7 @@ class ChatTest(aiounittest.AsyncTestCase):
         await client1.send_all('test message')
         time.sleep(0.1)
 
-        with get_cursor() as cursor:
+        with get_cursor(db_name=test_db_name) as cursor:
             messages = cursor.execute(get_messages_query).fetchall()
             self.assertEqual(len(messages), 1)
             self.assertEqual(messages[0][1], 'test_user_1')
@@ -97,7 +83,7 @@ class ChatTest(aiounittest.AsyncTestCase):
         # testing sending private messages
         await client2.send_to('test_user_1', 'test private message')
         time.sleep(0.5)
-        with get_cursor() as cursor:
+        with get_cursor(db_name=test_db_name) as cursor:
             messages = cursor.execute(get_messages_query).fetchall()
             self.assertEqual(len(messages), 2)
             self.assertEqual(messages[1][1], 'test_user_2')
@@ -111,7 +97,7 @@ class ChatTest(aiounittest.AsyncTestCase):
             await client2.send_all('limited message')
             time.sleep(0.2)
 
-        with get_cursor() as cursor:
+        with get_cursor(db_name=test_db_name) as cursor:
             get_messages_query = 'SELECT * FROM main.messages ' \
                                  'WHERE message = "limited message"'
             messages = cursor.execute(get_messages_query).fetchall()

@@ -1,23 +1,17 @@
-import logging
-import sys
 import asyncio
 import json
 import functools
 
 from datetime import datetime, timedelta
 from pytz import timezone
-from sqlite3 import connect, PARSE_DECLTYPES, PARSE_COLNAMES
 from asyncio.streams import StreamReader, StreamWriter
 from concurrent.futures import ThreadPoolExecutor
 
+from utils import server_logger, get_cursor
 from config import (
     DB_NAME, TZ, HOST, LIMIT_SHOW_MESSAGES, LIFETIME_MESSAGES,
     UPDATE_PERIOD, LIMIT_MESSAGES
 )
-
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-logger.addHandler(logging.StreamHandler(stream=sys.stdout))
 
 
 class Server:
@@ -48,7 +42,7 @@ class Server:
     async def client_connected(
             self, reader: StreamReader, writer: StreamWriter):
         address = writer.get_extra_info('peername')
-        logger.info('Start serving %s', address)
+        server_logger.info('Start serving %s', address)
 
         while True:
             data = await reader.read(1024)
@@ -56,7 +50,7 @@ class Server:
                 break
             await self.process_data(data, writer, address)
 
-        logger.info('Stop serving %s', address)
+        server_logger.info('Stop serving %s', address)
         await self.disconnect_user(writer)
 
     async def disconnect_user(self, writer: StreamWriter):
@@ -71,7 +65,7 @@ class Server:
                     try:
                         self.online_users.remove(user)
                     except ValueError as er:
-                        logger.error(
+                        server_logger.error(
                             f'Unable to remove user {user} from the list: {er}'
                         )
                     break
@@ -249,198 +243,146 @@ class Server:
         await writer.drain()
 
     def __create_record_in_db(self, message, sender, receiver):
-        connection = None
         receiver = receiver or 'all'
         try:
-            connection = connect(
-                self.db_name, detect_types=PARSE_DECLTYPES | PARSE_COLNAMES
-            )
-            cursor = connection.cursor()
-
-            store_message_query = '''
-                INSERT INTO main.messages(
-                    message, sender, receiver, send_date)
-                    VALUES (?, ?, ?, ?);
-            '''
-            cursor.execute(
-                store_message_query,
-                (
-                    message, sender, receiver,
-                    datetime.now(timezone(TZ))
+            with get_cursor(self.db_name) as cursor:
+                store_message_query = '''
+                    INSERT INTO main.messages(
+                        message, sender, receiver, send_date)
+                        VALUES (?, ?, ?, ?);
+                '''
+                cursor.execute(
+                    store_message_query,
+                    (
+                        message, sender, receiver,
+                        datetime.now(timezone(TZ))
+                    )
                 )
-            )
-            connection.commit()
+                cursor.connection.commit()
         except Exception as er:
-            logger.error(f'DB error - record message: {er}')
-        finally:
-            if connection:
-                connection.close()
+            server_logger.error(f'DB error - record message: {er}')
 
     def __get_available_messages(self, receiver, reg_date):
         messages = []
-        connection = None
         try:
-            connection = connect(
-                self.db_name, detect_types=PARSE_DECLTYPES | PARSE_COLNAMES
-            )
-            cursor = connection.cursor()
-            get_message_query = '''
-                SELECT *
-                FROM (
-                    SELECT
-                        send_date,
-                        sender,
-                        receiver, 
-                        message
-                    FROM main.messages
-                    WHERE receiver in ('all', ?)
-                        AND send_date >= ?
-                        OR sender = ?
-                    ORDER BY send_date
-                )
-                UNION
-                SELECT *
-                FROM (
-                    SELECT 
-                        send_date,
-                        sender,
-                        receiver, 
-                        message
-                    FROM main.messages
-                    WHERE receiver in ('all', ?)
-                        AND send_date <= ?
-                    ORDER BY send_date
-                    LIMIT {0}
-                )
-                ORDER BY send_date;
-            '''.format(LIMIT_SHOW_MESSAGES)
-            messages = cursor.execute(
-                get_message_query,
-                (receiver, reg_date, receiver, receiver, reg_date)
-            ).fetchall()
+            with get_cursor(self.db_name) as cursor:
+                get_message_query = '''
+                    SELECT *
+                    FROM (
+                        SELECT
+                            send_date,
+                            sender,
+                            receiver, 
+                            message
+                        FROM main.messages
+                        WHERE receiver in ('all', ?)
+                            AND send_date >= ?
+                            OR sender = ?
+                        ORDER BY send_date
+                    )
+                    UNION
+                    SELECT *
+                    FROM (
+                        SELECT 
+                            send_date,
+                            sender,
+                            receiver, 
+                            message
+                        FROM main.messages
+                        WHERE receiver in ('all', ?)
+                            AND send_date <= ?
+                        ORDER BY send_date
+                        LIMIT {0}
+                    )
+                    ORDER BY send_date;
+                '''.format(LIMIT_SHOW_MESSAGES)
+                messages = cursor.execute(
+                    get_message_query,
+                    (receiver, reg_date, receiver, receiver, reg_date)
+                ).fetchall()
         except Exception as er:
-            logger.error(f'DB error - get messages: {er}')
-        finally:
-            if connection:
-                connection.close()
+            server_logger.error(f'DB error - get messages: {er}')
         return messages
 
     def __create_user_db_record(self, user):
-        connection = None
         try:
-            connection = connect(
-                self.db_name, detect_types=PARSE_DECLTYPES | PARSE_COLNAMES
-            )
-            cursor = connection.cursor()
-
-            store_message_query = '''
-                        INSERT INTO main.registrations(
-                            username, reg_date)
-                            VALUES (?, ?);
-                    '''
-            cursor.execute(
-                store_message_query,
-                (
-                    user, datetime.now(timezone(TZ))
+            with get_cursor(self.db_name) as cursor:
+                store_message_query = '''
+                            INSERT INTO main.registrations(
+                                username, reg_date)
+                                VALUES (?, ?);
+                        '''
+                cursor.execute(
+                    store_message_query,
+                    (
+                        user, datetime.now(timezone(TZ))
+                    )
                 )
-            )
-            connection.commit()
+                cursor.connection.commit()
         except Exception as er:
-            logger.error(f'DB error - registration: {er}')
-        finally:
-            if connection:
-                connection.close()
+            server_logger.error(f'DB error - registration: {er}')
 
     def __get_user(self, username):
-        connection = None
         user = None
         try:
-            connection = connect(
-                self.db_name, detect_types=PARSE_DECLTYPES | PARSE_COLNAMES
-            )
-            cursor = connection.cursor()
-            get_user_query = '''
-                SELECT 
-                    r.username,
-                    r.reg_date,
-                    r.count_messages
-                FROM main.registrations r
-                WHERE r.username = ?;
-            '''
-            user = cursor.execute(
-                get_user_query, (username,)
-            ).fetchone()
+            with get_cursor(self.db_name) as cursor:
+                get_user_query = '''
+                    SELECT 
+                        r.username,
+                        r.reg_date,
+                        r.count_messages
+                    FROM main.registrations r
+                    WHERE r.username = ?;
+                '''
+                user = cursor.execute(
+                    get_user_query, (username,)
+                ).fetchone()
         except Exception as er:
-            logger.error(f'DB error - get user: {er}')
-        finally:
-            if connection:
-                connection.close()
+            server_logger.error(f'DB error - get user: {er}')
         return user
 
     def __delete_old_messages(self):
-        connection = None
         deadline_date = datetime.now(timezone(TZ)) - timedelta(
             minutes=LIFETIME_MESSAGES)
         try:
-            connection = connect(
-                self.db_name, detect_types=PARSE_DECLTYPES | PARSE_COLNAMES
-            )
-            cursor = connection.cursor()
-            delete_message_query = f'''
-                DELETE FROM main.messages WHERE send_date < '{deadline_date}';
-            '''
-            cursor.execute(delete_message_query)
-            connection.commit()
+            with get_cursor(self.db_name) as cursor:
+                delete_message_query = f'''
+                    DELETE FROM main.messages 
+                    WHERE send_date < '{deadline_date}';
+                '''
+                cursor.execute(delete_message_query)
+                cursor.connection.commit()
         except Exception as er:
-            logger.error(f'DB error - deleting messages: {er}')
-        finally:
-            if connection:
-                connection.close()
+            server_logger.error(f'DB error - deleting messages: {er}')
 
     def __append_count_message(self, username, count_messages):
-        connection = None
         try:
-            connection = connect(
-                self.db_name, detect_types=PARSE_DECLTYPES | PARSE_COLNAMES
-            )
-            cursor = connection.cursor()
-
-            append_count_query = ''' 
-                UPDATE main.registrations
-                SET count_messages = ?
-                WHERE username = ?
-            '''
-            cursor.execute(
-                append_count_query,
-                (
-                    count_messages, username
+            with get_cursor(self.db_name) as cursor:
+                append_count_query = ''' 
+                    UPDATE main.registrations
+                    SET count_messages = ?
+                    WHERE username = ?
+                '''
+                cursor.execute(
+                    append_count_query,
+                    (
+                        count_messages, username
+                    )
                 )
-            )
-            connection.commit()
+                cursor.connection.commit()
         except Exception as er:
-            logger.error(f'DB error - updating count messages: {er}')
-        finally:
-            if connection:
-                connection.close()
+            server_logger.error(f'DB error - updating count messages: {er}')
 
     def __reset_limits(self):
-        connection = None
         try:
-            connection = connect(
-                self.db_name, detect_types=PARSE_DECLTYPES | PARSE_COLNAMES
-            )
-            cursor = connection.cursor()
-
-            reset_limit_query = ''' 
-                UPDATE main.registrations
-                SET count_messages = 0
-            '''
-            cursor.execute(
-                reset_limit_query
-            )
-            connection.commit()
+            with get_cursor(self.db_name) as cursor:
+                reset_limit_query = ''' 
+                    UPDATE main.registrations
+                    SET count_messages = 0
+                '''
+                cursor.execute(
+                    reset_limit_query
+                )
+                cursor.connection.commit()
         except Exception as er:
-            logger.error(f'DB error - reset limits: {er}')
-        finally:
-            if connection:
-                connection.close()
+            server_logger.error(f'DB error - reset limits: {er}')
