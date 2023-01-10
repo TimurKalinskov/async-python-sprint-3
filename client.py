@@ -3,6 +3,7 @@ from asyncio.streams import StreamReader, StreamWriter
 
 from structs import RequestData
 from config import HOST
+from utils import client_logger
 
 
 class Client:
@@ -24,6 +25,7 @@ class Client:
             self.event_loop.run_until_complete(self.connect_to_server())
         except ConnectionRefusedError:
             print('Server is not available!')
+            client_logger.warning('Server is not available')
             return
         read_task = self.event_loop.create_task(self.read_data())
         send_task = self.event_loop.create_task(self.send_command())
@@ -34,6 +36,7 @@ class Client:
         self.reader, self.writer = await asyncio.open_connection(
             self.server_host, self.server_port
         )
+        client_logger.info('Connect to server')
         await self.send_hello_message()
         return self.reader, self.writer
 
@@ -74,6 +77,7 @@ class Client:
             if not data:
                 break
         print('Close the connection')
+        client_logger.info('Close the connection')
         self.writer.close()
 
     async def send_all(self, message: str = '') -> None:

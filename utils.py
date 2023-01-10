@@ -16,7 +16,8 @@ def config_logger(name, log_file, level=logging.INFO):
     return logger
 
 
-server_logger = config_logger('server_logger', 'chat.log')
+server_logger = config_logger('server_logger', 'server.log')
+client_logger = config_logger('client_logger', 'client.log')
 
 
 @contextmanager
