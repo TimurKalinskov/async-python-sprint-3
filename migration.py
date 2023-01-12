@@ -1,9 +1,9 @@
 import sqlite3
 
-from config import DB_NAME
+from config import settings
 
 
-def create_db(db_name: str = DB_NAME):
+def create_db(db_name: str = settings.DB_NAME):
     sqlite_connection = None
     try:
         sqlite_connection = sqlite3.connect(db_name)

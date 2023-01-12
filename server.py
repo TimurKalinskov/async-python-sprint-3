@@ -1,21 +1,24 @@
 import asyncio
+import aiosqlite
 import json
-import functools
 
 from datetime import datetime, timedelta
 from pytz import timezone
 from asyncio.streams import StreamReader, StreamWriter
 from concurrent.futures import ThreadPoolExecutor
 
-from utils import server_logger, get_cursor
-from config import (
-    DB_NAME, TZ, HOST, LIMIT_SHOW_MESSAGES, LIFETIME_MESSAGES,
-    UPDATE_PERIOD, LIMIT_MESSAGES
+from utils import server_logger
+from config import settings
+from structs import Target
+from sql_queries import (
+    get_message_query, store_message_query, store_user_query, get_user_query,
+    delete_message_query, append_count_query, reset_limit_query
 )
 
 
 class Server:
-    def __init__(self, host=HOST[0], port=HOST[1], db_name=DB_NAME):
+    def __init__(self, host: str = settings.HOST, port: int = settings.PORT,
+                 db_name: str = settings.DB_NAME) -> None:
         self.host: str = host
         self.port: int = port
         self.db_name = db_name
@@ -25,6 +28,7 @@ class Server:
 
     def listen(self) -> None:
         """Start server and run db tasks"""
+        print(f'Start server {self.host}:{self.port}')
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         main_task = loop.create_task(self.main())
@@ -47,10 +51,7 @@ class Server:
         address = writer.get_extra_info('peername')
         server_logger.info('Start serving %s', address)
 
-        while True:
-            data = await reader.read(1024)
-            if not data:
-                break
+        while data := await reader.read(1024):
             await self.process_data(data, writer, address)
 
         server_logger.info('Stop serving %s', address)
@@ -93,7 +94,8 @@ class Server:
             for w in w_list:
                 if w != self_writer:
                     w.write(
-                        f'{datetime.now(timezone(TZ))} {sender} to all: '
+                        f'{datetime.now(timezone(settings.TZ))} '
+                        f'{sender} to all: '
                         f'{message}'.encode()
                     )
                     await w.drain()
@@ -108,7 +110,7 @@ class Server:
                 for w in w_list:
                     if w != self_writer:
                         w.write(
-                            f'{datetime.now(timezone(TZ))} '
+                            f'{datetime.now(timezone(settings.TZ))} '
                             f'{sender} to {receiver}: '
                             f'{message}'.encode()
                         )
@@ -137,119 +139,140 @@ class Server:
         exist_user = await self.get_user(user)
         if not exist_user:
             await self.reg_user(user)
-            reg_date = datetime.now(timezone(TZ))
+            reg_date = datetime.now(timezone(settings.TZ))
         else:
             reg_date = exist_user[1]
             count_messages = exist_user[2]
 
-        if target == 'hello':
-            if user not in self.users:
-                self.users[user] = [writer]
-            else:
-                self.users[user].append(writer)
-            await self.send_available_messages(user, writer, reg_date)
-            await self.send_hello(user)
-        elif target == 'all':
-            if count_messages >= LIMIT_MESSAGES:
-                await self.send_limit_warning(writer)
-            else:
+        match target:
+            case Target.HELLO:
+                if user not in self.users:
+                    self.users[user] = [writer]
+                else:
+                    self.users[user].append(writer)
+                await self.send_available_messages(user, writer, reg_date)
+                await self.send_hello(user)
+            case Target.ALL:
+                if count_messages >= settings.LIMIT_MESSAGES:
+                    await self.send_limit_warning(writer)
+                else:
+                    await self.store_message(data)
+                    await self.send_to_all(writer, user, data['message'])
+                    await self.append_count_message(user, count_messages)
+            case Target.ONE_TO_ONE:
                 await self.store_message(data)
-                await self.send_to_all(writer, user, data['message'])
-                await self.append_count_message(user, count_messages)
-        elif target == 'one_to_one':
-            await self.store_message(data)
-            await self.send_to_one(
-                writer, user, data['message'], data['receiver']
-            )
-        elif target == 'status':
-            await self.send_status(writer, user, address)
+                await self.send_to_one(
+                    writer, user, data['message'], data['receiver']
+                )
+            case Target.STATUS:
+                await self.send_status(writer, user, address)
 
+    @staticmethod
     async def send_available_messages(
-            self, user: str, writer: StreamWriter, reg_date: datetime) -> None:
-        """Get and send messages available to the client - task"""
-        loop = asyncio.get_event_loop()
-        messages = await loop.run_in_executor(
-            self.db_executor,
-            functools.partial(
-                self.__get_available_messages,
-                receiver=user,
-                reg_date=reg_date
-            )
-        )
+            user: str, writer: StreamWriter, reg_date: datetime) -> None:
+        """Get and send messages available to the client"""
+        messages = []
+
+        try:
+            async with aiosqlite.connect(settings.DB_NAME) as db:
+                async with db.execute(
+                        get_message_query,
+                        (user, reg_date, user, user, reg_date)
+                ) as cursor:
+                    messages = await cursor.fetchall()
+        except aiosqlite.DatabaseError as er:
+            server_logger.error(f'DB error - get messages: {er}')
+
         for m in messages:
             message = f'{m[0]} {m[1]} to {m[2]}: {m[3]}\n'.encode()
             writer.write(message)
             await writer.drain()
 
-    async def store_message(self, data: dict) -> None:
-        """Store message in DB - task"""
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
-            self.db_executor,
-            functools.partial(
-                self.__create_message_record_in_db,
-                message=data['message'],
-                sender=data['username'],
-                receiver=data['receiver']
-            )
-        )
+    @staticmethod
+    async def store_message(data: dict) -> None:
+        """Store message in DB"""
+        receiver = data['receiver'] or 'all'
+        try:
+            async with aiosqlite.connect(settings.DB_NAME) as db:
+                await db.execute(
+                    store_message_query,
+                    (
+                        data['message'], data['username'], receiver,
+                        datetime.now(timezone(settings.TZ))
+                    )
+                )
+                await db.commit()
+        except aiosqlite.DatabaseError as er:
+            server_logger.error(f'DB error - record message: {er}')
 
-    async def reg_user(self, username: str) -> None:
-        """Register a user - task"""
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
-            self.db_executor,
-            functools.partial(
-                self.__create_user_db_record,
-                user=username
-            )
-        )
+    @staticmethod
+    async def reg_user(username: str) -> None:
+        """Register a user"""
+        try:
+            async with aiosqlite.connect(settings.DB_NAME) as db:
+                await db.execute(
+                    store_user_query,
+                    (username, datetime.now(timezone(settings.TZ)))
+                )
+                await db.commit()
+                server_logger.info(f'Create new user in DB - {username}')
+        except aiosqlite.DatabaseError as er:
+            server_logger.error(f'DB error - registration: {er}')
 
-    async def get_user(self, username: str) -> tuple[str]:
-        """Get user from DB - task"""
-        loop = asyncio.get_event_loop()
-        user = await loop.run_in_executor(
-            self.db_executor,
-            functools.partial(
-                self.__get_user,
-                username=username
-            )
-        )
+    @staticmethod
+    async def get_user(username: str) -> tuple[str]:
+        """Get user from DB"""
+        user = tuple()
+        try:
+            async with aiosqlite.connect(settings.DB_NAME) as db:
+                async with db.execute(get_user_query, (username,)) as cursor:
+                    user = await cursor.fetchone()
+        except aiosqlite.DatabaseError as er:
+            server_logger.error(f'DB error - get user: {er}')
         return user
 
-    async def delete_old_messages(self) -> None:
-        """Delete old messages - task"""
-        loop = asyncio.get_event_loop()
+    @staticmethod
+    async def delete_old_messages() -> None:
+        """Delete old messages"""
+        deadline_date = datetime.now(timezone(settings.TZ)) - timedelta(
+            minutes=settings.LIFETIME_MESSAGES)
+
         while True:
-            await loop.run_in_executor(
-                self.db_executor,
-                self.__delete_old_messages
-            )
+            try:
+                async with aiosqlite.connect(settings.DB_NAME) as db:
+                    await db.execute(delete_message_query, (deadline_date,))
+                    await db.commit()
+                    if db.total_changes != 0:
+                        server_logger.info('Deleting old messages')
+            except aiosqlite.DatabaseError as er:
+                server_logger.error(f'DB error - deleting messages: {er}')
             await asyncio.sleep(60)
 
-    async def append_count_message(
-            self, username: str, count_messages: int) -> None:
-        """Add to message counter for the user - task"""
+    @staticmethod
+    async def append_count_message(username: str, count_messages: int) -> None:
+        """Add to message counter for the user"""
         count_messages += 1
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
-            self.db_executor,
-            functools.partial(
-                self.__append_count_message,
-                username=username,
-                count_messages=count_messages
-            )
-        )
+        try:
+            async with aiosqlite.connect(settings.DB_NAME) as db:
+                await db.execute(append_count_query, (count_messages, username))
+                await db.commit()
+        except aiosqlite.DatabaseError as er:
+            server_logger.error(f'DB error - updating count messages: {er}')
 
-    async def reset_limit_messages(self) -> None:
-        """Reset the message counter for the user - task"""
-        loop = asyncio.get_event_loop()
+    @staticmethod
+    async def reset_limit_messages() -> None:
+        """Reset the message counter for the user"""
         while True:
-            await loop.run_in_executor(
-                self.db_executor,
-                self.__reset_limits
-            )
-            await asyncio.sleep(60 * UPDATE_PERIOD)
+            try:
+                async with aiosqlite.connect(settings.DB_NAME) as db:
+                    await db.execute(
+                        reset_limit_query
+                    )
+                    await db.commit()
+                    server_logger.info('Reset message counter')
+            except aiosqlite.DatabaseError as er:
+                server_logger.error(f'DB error - reset limits: {er}')
+            await asyncio.sleep(60 * settings.UPDATE_PERIOD)
 
     async def send_status(self, writer: StreamWriter, username: str,
                           address: tuple[str, int]) -> None:
@@ -268,158 +291,10 @@ class Server:
                      'to the general chat'.encode())
         await writer.drain()
 
-    def __create_message_record_in_db(
-            self, message: str, sender: str, receiver: str) -> None:
-        """Store message in DB"""
-        receiver = receiver or 'all'
-        try:
-            with get_cursor(self.db_name) as cursor:
-                store_message_query = '''
-                    INSERT INTO main.messages(
-                        message, sender, receiver, send_date)
-                        VALUES (?, ?, ?, ?);
-                '''
-                cursor.execute(
-                    store_message_query,
-                    (message, sender, receiver, datetime.now(timezone(TZ)))
-                )
-                cursor.connection.commit()
-        except Exception as er:
-            server_logger.error(f'DB error - record message: {er}')
-
-    def __get_available_messages(
-            self, receiver: str, reg_date: datetime) -> list:
-        """Get and send messages available to the client"""
-        messages = []
-        try:
-            with get_cursor(self.db_name) as cursor:
-                get_message_query = '''
-                    SELECT *
-                    FROM (
-                        SELECT
-                            send_date,
-                            sender,
-                            receiver, 
-                            message
-                        FROM main.messages
-                        WHERE receiver in ('all', ?)
-                            AND send_date >= ?
-                            OR sender = ?
-                        ORDER BY send_date
-                    )
-                    UNION
-                    SELECT *
-                    FROM (
-                        SELECT 
-                            send_date,
-                            sender,
-                            receiver, 
-                            message
-                        FROM main.messages
-                        WHERE receiver in ('all', ?)
-                            AND send_date <= ?
-                        ORDER BY send_date
-                        LIMIT {0}
-                    )
-                    ORDER BY send_date;
-                '''.format(LIMIT_SHOW_MESSAGES)
-                messages = cursor.execute(
-                    get_message_query,
-                    (receiver, reg_date, receiver, receiver, reg_date)
-                ).fetchall()
-        except Exception as er:
-            server_logger.error(f'DB error - get messages: {er}')
-        return messages
-
-    def __create_user_db_record(self, user: str) -> None:
-        """Register a user"""
-        try:
-            with get_cursor(self.db_name) as cursor:
-                store_message_query = '''
-                            INSERT INTO main.registrations(
-                                username, reg_date)
-                                VALUES (?, ?);
-                        '''
-                cursor.execute(
-                    store_message_query,
-                    (user, datetime.now(timezone(TZ)))
-                )
-                cursor.connection.commit()
-                server_logger.info(f'Create new user in DB - {user}')
-        except Exception as er:
-            server_logger.error(f'DB error - registration: {er}')
-
-    def __get_user(self, username: str) -> tuple:
-        """Get user from DB"""
-        user = tuple()
-        try:
-            with get_cursor(self.db_name) as cursor:
-                get_user_query = '''
-                    SELECT 
-                        r.username,
-                        r.reg_date,
-                        r.count_messages
-                    FROM main.registrations r
-                    WHERE r.username = ?;
-                '''
-                user = cursor.execute(
-                    get_user_query, (username,)
-                ).fetchone()
-        except Exception as er:
-            server_logger.error(f'DB error - get user: {er}')
-        return user
-
-    def __delete_old_messages(self) -> None:
-        """Delete old messages"""
-        deadline_date = datetime.now(timezone(TZ)) - timedelta(
-            minutes=LIFETIME_MESSAGES)
-        try:
-            with get_cursor(self.db_name) as cursor:
-                delete_message_query = f'''
-                    DELETE FROM main.messages 
-                    WHERE send_date < '{deadline_date}';
-                '''
-                cursor.execute(delete_message_query)
-                cursor.connection.commit()
-                server_logger.info('Deleting old messages')
-        except Exception as er:
-            server_logger.error(f'DB error - deleting messages: {er}')
-
-    def __append_count_message(
-            self, username: str, count_messages: int) -> None:
-        """Add to message counter for the user"""
-        try:
-            with get_cursor(self.db_name) as cursor:
-                append_count_query = ''' 
-                    UPDATE main.registrations
-                    SET count_messages = ?
-                    WHERE username = ?
-                '''
-                cursor.execute(
-                    append_count_query,
-                    (count_messages, username)
-                )
-                cursor.connection.commit()
-        except Exception as er:
-            server_logger.error(f'DB error - updating count messages: {er}')
-
-    def __reset_limits(self) -> None:
-        """Reset the message counter for the user"""
-        try:
-            with get_cursor(self.db_name) as cursor:
-                reset_limit_query = ''' 
-                    UPDATE main.registrations
-                    SET count_messages = 0
-                '''
-                cursor.execute(
-                    reset_limit_query
-                )
-                cursor.connection.commit()
-                server_logger.info('Reset message counter')
-        except Exception as er:
-            server_logger.error(f'DB error - reset limits: {er}')
-
 
 if __name__ == '__main__':
     server = Server()
-    server.listen()
+    try:
+        server.listen()
+    except KeyboardInterrupt:
+        print(f'\nStopping server {server.host}:{server.port}')

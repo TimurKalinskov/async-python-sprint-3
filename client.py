@@ -1,17 +1,14 @@
 import asyncio
 from asyncio.streams import StreamReader, StreamWriter
 
-from structs import RequestData
-from config import HOST
+from structs import RequestData, Command
+from config import settings
 from utils import client_logger
 
 
 class Client:
-    allow_commands = [
-        'send', 'send-to', 'status', 'exit', 'quit', 'help'
-    ]
-
-    def __init__(self, username: str, server_host=HOST[0], server_port=HOST[1]):
+    def __init__(self, username: str, server_host: str = settings.HOST,
+                 server_port: int = settings.PORT) -> None:
         self.username = username
         self.server_host = server_host
         self.server_port = server_port
@@ -21,6 +18,7 @@ class Client:
 
     def connect(self) -> None:
         """The main method of connecting to the server"""
+        print(111111)
         try:
             self.event_loop.run_until_complete(self.connect_to_server())
         except ConnectionRefusedError:
@@ -51,31 +49,29 @@ class Client:
             command = await self.event_loop.run_in_executor(
                 None, lambda: input(f'{self.username}: ')
             )
-            if not command:
+            if not command.strip():
                 continue
             command = command.split()
-            if not command[0] in self.allow_commands:
-                print(f'Command "{command[0]}" is not allowed')
-                continue
-            elif command[0] in ['exit', 'quit']:
-                self.writer.close()
-                break
-            elif command[0] == 'send':
-                await self.send_all(' '.join(command[1:]))
-            elif command[0] == 'send-to':
-                await self.send_to(command[1], ' '.join(command[2:]))
-            elif command[0] == 'status':
-                await self.get_status()
-            elif command[0] == 'help':
-                self.get_help()
+            match command[0]:
+                case Command.EXIT | Command.QUIT:
+                    self.writer.close()
+                    break
+                case Command.SEND:
+                    await self.send_all(' '.join(command[1:]))
+                case Command.SEND_TO:
+                    await self.send_all(' '.join(command[1:]))
+                case Command.STATUS:
+                    await self.get_status()
+                case Command.HELP:
+                    self.get_help()
+                case _:
+                    print(f'Command "{command[0]}" is not allowed')
 
     async def read_data(self) -> None:
         """Receiving incoming data and printing"""
-        while True:
-            data = await self.reader.read(1024)
+        while data := await self.reader.read(1024):
             print(f'\n{data.decode()}')
-            if not data:
-                break
+
         print('Close the connection')
         client_logger.info('Close the connection')
         self.writer.close()

@@ -10,7 +10,7 @@ from asyncio.streams import StreamReader, StreamWriter
 from migration import create_db
 from client import Client
 from server import Server
-from config import LIMIT_MESSAGES
+from config import settings
 from utils import get_cursor
 
 
@@ -93,7 +93,7 @@ class ChatTest(aiounittest.AsyncTestCase):
             self.assertEqual(users[1][3], 0)
 
         # testing message limit
-        for m in range(LIMIT_MESSAGES + 2):
+        for m in range(settings.LIMIT_MESSAGES + 2):
             await client2.send_all('limited message')
             time.sleep(0.2)
 
@@ -101,7 +101,7 @@ class ChatTest(aiounittest.AsyncTestCase):
             get_messages_query = 'SELECT * FROM main.messages ' \
                                  'WHERE message = "limited message"'
             messages = cursor.execute(get_messages_query).fetchall()
-            self.assertEqual(len(messages), LIMIT_MESSAGES)
+            self.assertEqual(len(messages), settings.LIMIT_MESSAGES)
 
 
 if __name__ == '__main__':
