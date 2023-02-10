@@ -18,7 +18,6 @@ class Client:
 
     def connect(self) -> None:
         """The main method of connecting to the server"""
-        print(111111)
         try:
             self.event_loop.run_until_complete(self.connect_to_server())
         except ConnectionRefusedError:
